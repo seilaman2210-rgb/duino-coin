@@ -5,10 +5,6 @@
   (____/(______)(____)(_)\_)(_____)     \___)(_____)(____)(_)\_)
   Official code for Arduino boards (and relatives)   version 4.3
   Duino-Coin Team & Community 2019-2024 © MIT Licensed
-  this script was firstly made by Chocoetom, also knowed as BloodFell, and then improved Ruvyzvat.
-  this script can reach almost 783/785hs with a Arduino Uno (stable), no errors or instabilitys found while testing this code.
-  some comments may look weird, cause Ruvyzvat write it in other language
-  i added lots of comments for easier begginer understand
 */
 
 /*
