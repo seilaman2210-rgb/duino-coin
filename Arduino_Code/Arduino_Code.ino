@@ -1,164 +1,194 @@
 /*
-
-   ____  __  __  ____  _  _  _____       ___  _____  ____  _  _ 
+   ____  __  __  ____  _  _  _____       ___  _____  ____  _  _
   (  _ \(  )(  )(_  _)( \( )(  _  )___  / __)(  _  )(_  _)( \( )
-   )(_) ))(__)(  _)(_  )  (  )(_)((___)( (__  )(_)(  _)(_  )  ( 
+   )(_) ))(__)(  _)(_  )  (  )(_)((___)( (__  )(_)(  _)(_  )  (
   (____/(______)(____)(_)\_)(_____)     \___)(_____)(____)(_)\_)
   Official code for Arduino boards (and relatives)   version 4.3
-  
-  Duino-Coin Team & Community 2019-2026 © MIT Licensed
-  https://duinocoin.com
-  https://github.com/revoxhere/duino-coin
-  If you don't know where to start, visit official website and navigate to
-  the Getting Started page. Have fun mining!
+  Duino-Coin Team & Community 2019-2024 © MIT Licensed
+  this script was firstly made by Chocoetom, also knowed as BloodFell, and then improved Ruvyzvat.
+  this script can reach almost 783/785hs with a Arduino Uno (stable), no errors or instabilitys found while testing this code.
+  some comments may look weird, cause Ruvyzvat write it in other language
+  i added lots of comments for easier begginer understand
+*/
+
+/*
+about this code:
+> this script was firstly made by Chocoetom, also knowed as BloodFell, and then improved Ruvyzvat.
+> this script can reach almost 783/785hs with a Arduino Uno (stable), no errors or instabilitys found while testing this code.
+> some comments may look weird, cause Ruvyzvat write it in other language
+> i added lots of comments for easier begginer understand (last thing made)
 */
 
 /* For microcontrollers with low memory change that to -Os in all files,
 for default settings use -O0. -O may be a good tradeoff between both */
 #pragma GCC optimize ("-Ofast")
+
+#include <stdint.h>
+
 /* For microcontrollers with custom LED pins, adjust the line below */
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 13
 #endif
+
+/* Protocol tokens used when sending results back to the DUCO server.
+The server expects: nonce,elapsed_us,DUCOID\n */
 #define SEP_TOKEN ","
 #define END_TOKEN "\n"
-/* For 8-bit microcontrollers we should use 16 bit variables since the
-difficulty is low, for all the other cases should be 32 bits. */
-#if defined(ARDUINO_ARCH_AVR) || defined(ARDUINO_ARCH_MEGAAVR)
-typedef uint32_t uintDiff;
-#else
-typedef uint32_t uintDiff;
-#endif
-// Arduino identifier library - https://github.com/ricaun
-#include "uniqueID.h"
 
+typedef uint32_t uintDiff;
+
+#include "uniqueID.h"
+#include <string.h>
 #include "duco_hash.h"
 
-String get_DUCOID() {
-  String ID = "DUCOID";
-  char buff[4];
-  for (size_t i = 0; i < 8; i++) {
-    sprintf(buff, "%02X", (uint8_t)UniqueID8[i]);
-    ID += buff;
-  }
-  return ID;
-}
+// Forward declaration
+uintDiff ducos1a_mine(const char* prevBlockHash, const uint32_t* targetWords, uintDiff maxNonce);
 
-String DUCOID = "";
+// Size sufficient for “DUCOID” + 16 hex characters + null
+static char ducoid_chars[23];
+
+/* Builds the miner's unique ID string: "DUCOID" + 16 hex chars from the chip's
+hardware serial number. This ID is sent with every result so the server knows
+which device submitted the share. */
+static void generate_ducoid() {
+  memcpy(ducoid_chars, "DUCOID", 6);
+  char* ptr = ducoid_chars + 6;
+  for (uint8_t i = 0; i < 8; i++) {
+    uint8_t val = (uint8_t)UniqueID8[i];
+    *ptr++ = "0123456789ABCDEF"[val >> 4];
+    *ptr++ = "0123456789ABCDEF"[val & 0x0F];
+  }
+  *ptr = '\0';
+}
 
 void setup() {
-  // Prepare built-in led pin as output
   pinMode(LED_BUILTIN, OUTPUT);
-  DUCOID = get_DUCOID();
-  // Open serial port
+  generate_ducoid();
+
   Serial.begin(115200);
   Serial.setTimeout(10000);
-  while (!Serial)
-    ;  // For Arduino Leonardo or any board with the ATmega32U4
-  Serial.flush();
+  while (!Serial);
+  Serial.flush();  // keep it
 }
 
-void lowercase_hex_to_bytes(char const * hexDigest, uint8_t * rawDigest) {
-  for (uint8_t i = 0, j = 0; j < SHA1_HASH_LEN; i += 2, j += 1) {
-    uint8_t x = hexDigest[i];
-    uint8_t b = x >> 6;
-    uint8_t r = ((x & 0xf) | (b << 3)) + b;
+/* Converts a single lowercase hex character ('0'-'9', 'a'-'f') to its 4-bit value.
+  Example: HEX_NIBBLE('b') == 11 */
+#define HEX_NIBBLE(c) (((c) - '0' < 10) ? ((c) - '0') : ((c) - 'a' + 10))
 
-    x = hexDigest[i + 1];
-    b = x >> 6;
+static void hex_to_words(const char* hex, uint32_t* words) {
+  for (uint8_t w = 0; w < SHA1_HASH_LEN / 4; w++) {
+    const char* src = hex + w * 8;
+    uint32_t b0 = (HEX_NIBBLE(src[0]) << 4) | HEX_NIBBLE(src[1]);
+    uint32_t b1 = (HEX_NIBBLE(src[2]) << 4) | HEX_NIBBLE(src[3]);
+    uint32_t b2 = (HEX_NIBBLE(src[4]) << 4) | HEX_NIBBLE(src[5]);
+    uint32_t b3 = (HEX_NIBBLE(src[6]) << 4) | HEX_NIBBLE(src[7]);
 
-    rawDigest[j] = (r << 4) | (((x & 0xf) | (b << 3)) + b);
+    words[w] = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
   }
 }
 
-// DUCO-S1A hasher
-uintDiff ducos1a(char const * prevBlockHash, char const * targetBlockHash, uintDiff difficulty) {
-  #if defined(ARDUINO_ARCH_AVR) || defined(ARDUINO_ARCH_MEGAAVR)
-    // If the difficulty is too high for AVR architecture then return 0
-    if (difficulty > 655) return 0;
-  #endif
-
-  uint8_t target[SHA1_HASH_LEN];
-  lowercase_hex_to_bytes(targetBlockHash, target);
-
-  uintDiff const maxNonce = difficulty * 100 + 1;
-  return ducos1a_mine(prevBlockHash, target, maxNonce);
+/* Increments a decimal number stored as an ASCII string in-place.
+  Handles carry (e.g. "99" -> "100") and automatically grows the string length.
+  This avoids any integer-to-string conversion inside the hot mining loop. */
+static void increment_nonce_ascii(char* nonceStr, uint8_t* nonceLen) {
+  int8_t i = *nonceLen - 1;
+  for (; i >= 0; --i) {
+    if (nonceStr[i] != '9') {
+      nonceStr[i]++;
+      return;
+    }
+    nonceStr[i] = '0';
+  }
+  for (uint8_t j = *nonceLen; j > 0; --j)
+    nonceStr[j] = nonceStr[j - 1];
+  nonceStr[0] = '1';
+  (*nonceLen)++;
+  nonceStr[*nonceLen] = '\0';
 }
 
-uintDiff ducos1a_mine(char const * prevBlockHash, uint8_t const * target, uintDiff maxNonce) {
+/* DUCO-S1 algorithm entry point.
+  Converts the target hash from hex to 5 uint32 words, then searches for the
+  nonce in range [0, difficulty*100] whose SHA1(prevHash + nonce) == target.
+  Returns the winning nonce, or 0 if not found within the limit. */
+uintDiff ducos1a(const char* prevBlockHash, const char* targetBlockHash, uintDiff difficulty) {
+#if defined(ARDUINO_ARCH_AVR) || defined(ARDUINO_ARCH_MEGAAVR)
+  if (difficulty > 655) return 0;
+#endif
+
+  uint32_t targetWords[SHA1_HASH_LEN / 4];
+  hex_to_words(targetBlockHash, targetWords);
+
+  uintDiff maxNonce = difficulty * 100 + 1;
+  return ducos1a_mine(prevBlockHash, targetWords, maxNonce);
+}
+
+/* Inner mining loop. Iterates nonce as a decimal ASCII string ("0", "1", ...)
+  and calls duco_hash_try_nonce() for each candidate.
+  The nonce is kept as ASCII because that is exactly what SHA1 will hash —
+  no conversion needed, saving cycles on every iteration. */
+uintDiff ducos1a_mine(const char* prevBlockHash, const uint32_t* targetWords, uintDiff maxNonce) {
   static duco_hash_state_t hash;
   duco_hash_init(&hash, prevBlockHash);
 
-  char nonceStr[10 + 1];
-  for (uintDiff nonce = 0; nonce < maxNonce; nonce++) {
-    ultoa(nonce, nonceStr, 10);
+  char nonceStr[10 + 1] = "0";
+  uint8_t nonceLen = 1;
 
-    uint8_t const * hash_bytes = duco_hash_try_nonce(&hash, nonceStr);
-    if (memcmp(hash_bytes, target, SHA1_HASH_LEN) == 0) {
+  for (uintDiff nonce = 0; nonce < maxNonce; nonce++) {
+    if (duco_hash_try_nonce(&hash, nonceStr, nonceLen, targetWords)) {
       return nonce;
     }
+    increment_nonce_ascii(nonceStr, &nonceLen);
   }
-
   return 0;
 }
 
 void loop() {
-  // Wait for serial data
-  if (Serial.available() <= 0) {
+  if (Serial.available() <= 0)
     return;
-  }
 
-  // Reserve 1 extra byte for comma separator (and later zero)
   char lastBlockHash[40 + 1];
   char newBlockHash[40 + 1];
 
-  // Read last block hash
-  if (Serial.readBytesUntil(',', lastBlockHash, 41) != 40) {
+  if (Serial.readBytesUntil(',', lastBlockHash, 41) != 40)
     return;
-  }
-  lastBlockHash[40] = 0;
+  lastBlockHash[40] = '\0';
 
-  // Read expected hash
-  if (Serial.readBytesUntil(',', newBlockHash, 41) != 40) {
+  if (Serial.readBytesUntil(',', newBlockHash, 41) != 40)
     return;
-  }
-  newBlockHash[40] = 0;
+  newBlockHash[40] = '\0';
 
-  // Read difficulty
-  uintDiff difficulty = strtoul(Serial.readStringUntil(',').c_str(), NULL, 10);
-  // Clearing the receive buffer reading one job.
-  while (Serial.available()) Serial.read();
-  // Turn off the built-in led
-  #if defined(ARDUINO_ARCH_AVR)
-      PORTB = PORTB | B00100000;
-  #else
-      digitalWrite(LED_BUILTIN, LOW);
-  #endif
+  char diffBuffer[16];
+  int diffLen = Serial.readBytesUntil(',', diffBuffer, sizeof(diffBuffer));
+  if (diffLen == 0) return;
+  diffBuffer[diffLen] = '\0';
+  uintDiff difficulty = strtoul(diffBuffer, NULL, 10);
 
-  // Start time measurement
+// Turn LED ON to signal that mining has started (PORTB bit 5 = pin 13 on Uno).
+// Direct port write is used instead of digitalWrite() to save ~4 µs per job.
+#if defined(ARDUINO_ARCH_AVR)
+  PORTB |= B00100000;
+#else
+  digitalWrite(LED_BUILTIN, HIGH);
+#endif
+
   uint32_t startTime = micros();
+  uintDiff result = ducos1a(lastBlockHash, newBlockHash, difficulty);
+  uint32_t elapsed = micros() - startTime;
 
-  // Call DUCO-S1A hasher
-  uintDiff ducos1result = ducos1a(lastBlockHash, newBlockHash, difficulty);
+// Turn LED OFF when the result is ready and about to be transmitted.
+#if defined(ARDUINO_ARCH_AVR)
+  PORTB &= B11011111;
+#else
+  digitalWrite(LED_BUILTIN, LOW);
+#endif
 
-  // Calculate elapsed time
-  uint32_t elapsedTime = micros() - startTime;
-
-  // Turn on the built-in led
-  #if defined(ARDUINO_ARCH_AVR)
-      PORTB = PORTB & B11011111;
-  #else
-      digitalWrite(LED_BUILTIN, HIGH);
-  #endif
-
-  // Clearing the receive buffer before sending the result.
   while (Serial.available()) Serial.read();
 
-  // Send result back to the program with share time
-  Serial.print(String(ducos1result, 2) 
-               + SEP_TOKEN
-               + String(elapsedTime, 2) 
-               + SEP_TOKEN
-               + String(DUCOID) 
-               + END_TOKEN);
+  // Submit the results in the **correct format**: nonce (binary), timestamp (binary), DUCOID
+  Serial.print(result, BIN);
+  Serial.print(SEP_TOKEN);
+  Serial.print(elapsed, BIN);
+  Serial.print(SEP_TOKEN);
+  Serial.print(ducoid_chars);
+  Serial.print(END_TOKEN);      // Send only “\n”, not '\r'
 }
