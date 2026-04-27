@@ -13,6 +13,7 @@ about this code:
 > this script can reach almost 783/785hs with a Arduino Uno (stable), no errors or instabilitys found while testing this code.
 > some comments may look weird, cause Ruvyzvat write it in other language
 > i added lots of comments for easier begginer understand (last thing made)
+> this script uses 8% less flash compared to the official code, and uses only 394~ bytes of the arduino memory, which fits perfectly with the total avaible memory
 */
 
 /* For microcontrollers with low memory change that to -Os in all files,
